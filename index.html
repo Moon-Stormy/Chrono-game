@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="google-site-verification" content="4CUvEfozlaGl4v1n_SIHTlsRJU8EkyiH9qTBPlQIh0o" />
+<title>Chrono Game Online - Jeu de réflexion en ligne</title>
+<meta name="description" content="Jeu de réflexion multijoueur en ligne. Teste ton horloge interne et compare ton score avec les autres joueurs.">
+
+<style>
+body{
+  font-family:Arial;
+  background:#f2f2f2;
+  display:flex;
+  justify-content:center;
+  padding:20px;
+}
+
+.container{
+  background:white;
+  padding:20px;
+  border-radius:12px;
+  max-width:600px;
+  width:100%;
+}
+
+input,button{
+  width:100%;
+  padding:10px;
+  margin-top:10px;
+  font-size:16px;
+}
+
+#board div{
+  padding:6px;
+  border-bottom:1px solid #eee;
+}
+
+#status{
+  text-align:center;
+  margin-top:10px;
+}
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+
+<h1>🎯 Chrono Game Online</h1>
+
+<!-- AUTH -->
+<div id="auth">
+  <input id="pseudo" placeholder="Pseudo">
+  <input id="email" placeholder="Email">
+  <input id="pass" type="password" placeholder="Mot de passe">
+
+  <button id="registerBtn">Créer compte</button>
+  
+  <button id="loginBtn">Connexion</button>
+</div>
+
+<!-- GAME -->
+<div id="game" style="display:none">
+
+  <button id="startBtn">▶ Start</button>
+  <button id="logoutBtn">Déconnexion</button>
+
+  <div id="status">Prêt</div>
+  <div id="rankDisplay">🏆 Rang : Bronze</div>
+
+  <div id="guessBox" style="display:none">
+    <input id="guess" type="number" step="0.01">
+    <button id="validateBtn">Valider</button>
+  </div>
+
+  <h3>🏆 Leaderboard</h3>
+  <div id="board"></div>
+
+<div id="rankGuide">
+  <h3>🏆 Ranks</h3>
+
+  <div>❓ Non classé (0–5 parties)</div>
+  <div>🥉 Bronze (≤ 30 de score moyen)</div>
+  <div>🥈 Argent (≤ 40 de score moyen)</div>
+  <div>🥇 Or (≤ 50 de score moyen)</div>
+  <div>💎 Diamant (≤ 60 de score moyen)</div>
+  <div>🔮 Améthyste (≤ 70 de score moyen)</div>
+  <div>🏅 Champion (≤ 80 de score moyen)</div>
+  <div>👑 Légende (≤ 90 de score moyen)</div>
+  <div>🌌 Primordial (90+ de score moyen)</div>
+</div>
+
+</div>
+
+</div>
+
+<script type="module">
+
+
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  getDoc,
+  collection,
+  onSnapshot,
+  query,
+  orderBy,
+  limit,
+  getDocs
+} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+console.log("getDocs =", getDocs);
+
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  onAuthStateChanged,
+  signOut
+} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+
+// 🔥 CONFIG
+const firebaseConfig = {
+  apiKey: "AIzaSyAt2b3N7cGxOm1HuHnxETosKMSeKs7mixU",
+  authDomain: "chrono-game.firebaseapp.com",
+  projectId: "chrono-game",
+  storageBucket: "chrono-game.firebasestorage.app",
+  messagingSenderId: "3822044642",
+  appId: "1:3822044642:web:886dfad9e2c6f3d15ba5bb",
+  measurementId: "G-9XGG8PKELE"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+
+// ---------------- STATE ----------------
+let user=null;
+let uid=null;
+let pseudo="";
+let startTime=0;
+let realTime=0;
+let locked=false;
+
+// 🔊 AUDIO INIT
+let audioCtx;
+
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+}
+
+// débloque le son dès la première interaction utilisateur
+document.addEventListener("click", initAudio, { once: true });
+
+// ---------------- 🔊 BEEP ----------------
+function beep(freq = 800, duration = 150) {
+  initAudio();
+
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+
+  osc.frequency.value = freq;
+  osc.type = "sine";
+
+  gain.gain.value = 0.2;
+
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+
+  osc.start();
+  osc.stop(audioCtx.currentTime + duration / 1000);
+}
+
+// ---------------- AUTH ----------------
+
+window.register = async function () {
+  const email = document.getElementById("email").value;
+  const pass = document.getElementById("pass").value;
+  const pseudoInput = document.getElementById("pseudo").value.trim();
+
+  try {
+    await signOut(auth);
+
+    const cred = await createUserWithEmailAndPassword(auth, email, pass);
+
+    const safePseudo = pseudoInput || email.split("@")[0];
+
+    await setDoc(doc(db, "players", cred.user.uid), {
+      email: email,
+      pseudo: safePseudo,
+      games: 0,
+      avgScore: 0,
+      bestScore: 0,
+      updatedAt: Date.now()
+    });
+
+    pseudo = safePseudo;
+
+    console.log("Compte créé :", cred.user.uid);
+
+  } catch (e) {
+    console.log(e.code, e.message);
+    alert(e.message);
+  }
+};
+
+window.login = async function () {
+  const email = document.getElementById("email").value;
+  const pass = document.getElementById("pass").value;
+
+  try {
+    await signInWithEmailAndPassword(auth, email, pass);
+  } catch (e) {
+    console.log(e.code, e.message);
+    alert(e.message);
+  }
+};
+// ---------------- LOGOUT ----------------
+window.logout = async function(){
+  await signOut(auth);
+};
+
+// ---------------- AUTH STATE ----------------
+onAuthStateChanged(auth, async (u)=>{
+
+  const authBox = document.getElementById("auth");
+  const gameBox = document.getElementById("game");
+
+  if(!authBox || !gameBox) return;
+
+  if (u) {
+  user = u;
+  uid = u.uid;
+
+  authBox.style.display = "none";
+  gameBox.style.display = "block";
+
+  await ensurePlayer();
+
+  // 🔥 IMPORTANT: recalcul réel des games
+  const games = await getRealGamesCount(uid);
+
+  // update Firestore pour stabiliser
+  await setDoc(doc(db,"players",uid), {
+    games
+  }, { merge: true });
+
+  await refreshRank();
+
+  listenLeaderboard();
+  }
+});
+
+// ---------------- PLAYER ----------------
+async function ensurePlayer(){
+
+  const ref = doc(db,"players",uid);
+  const snap = await getDoc(ref);
+
+  const safePseudo = pseudo || user.email.split("@")[0];
+
+  if(!snap.exists()){
+    await setDoc(ref,{
+      email:user.email,
+      pseudo:safePseudo,
+      games:0,
+      avgScore:0,
+      bestScore:0,
+      updatedAt:Date.now()
+    });
+  } else {
+
+    const data = snap.data();
+    pseudo = data.pseudo || safePseudo;
+
+    await setDoc(ref,{
+      pseudo:pseudo
+    },{merge:true});
+  }
+}
+
+// ---------------- GAME ----------------
+window.startGame = function(){
+
+  locked=false;
+
+  document.getElementById("guessBox").style.display="none";
+  document.getElementById("status").innerText="🎧 Écoute...";
+
+  const min = 0.2;
+  const max = 10.0;
+
+  const wait = (Math.random()*(max-min)+min)*1000;
+
+  beep(900,120); // 🔊 START
+
+  startTime = performance.now();
+
+  setTimeout(()=>{
+
+    beep(400,200); // 🔊 GO
+
+    realTime = (performance.now()-startTime)/1000;
+
+    document.getElementById("guessBox").style.display="block";
+    document.getElementById("guess").value="";
+    document.getElementById("guess").focus();
+
+  },wait);
+};
+
+// ---------------- SCORE ----------------
+function score(err){
+
+  const maxError = 2.5;
+
+  const clamped = Math.min(err, maxError);
+  const n = 1 - (clamped / maxError);
+
+  // 🟢 zone normale (0 → 80)
+  const base = Math.pow(n, 1.4);
+
+  let s = Math.round(100 * base);
+
+  // 🔥 zone hardcore (80+)
+  if (s > 80) {
+  const extra = s - 80;
+  s = 80 + Math.round(Math.pow(extra / 10, 2) * 10);
+}
+
+  return Math.min(100, s);
+}
+
+async function getRealGamesCount(uid){
+  const gamesRef = collection(db, "players", uid, "games");
+  const snap = await getDocs(gamesRef);
+  return snap.size;
+}
+
+// ---------------- RANK SYSTEM ----------------
+
+function getRank(avg, games = 0){
+
+  games = Number(games) || 0;
+
+  if (games < 5) return "❓ Non classé";
+
+  if(avg >= 90) return "🌌 Primordial";
+  if(avg >= 80) return "👑 Légende";
+  if(avg >= 70) return "🏅 Champion";
+  if(avg >= 60) return "🔮 Améthyste";
+  if(avg >= 50) return "💎 Diamant";
+  if(avg >= 40) return "🥇 Or";
+  if(avg >= 30) return "🥈 Argent";
+  return "🥉 Bronze";
+}
+
+function getBadge(avg, games = 0){
+
+  games = Number(games) || 0;
+
+  if (games < 5) return "❓";
+
+  if(avg >= 90) return "🌌";
+  if(avg >= 80) return "👑";
+  if(avg >= 70) return "🏅";
+  if(avg >= 60) return "🔮";
+  if(avg >= 50) return "💎";
+  if(avg >= 40) return "🥇";
+  if(avg >= 30) return "🥈";
+  return "🥉";
+}
+
+function updateRankDisplay(avgScore, games = 0){
+  document.getElementById("rankDisplay").innerText =
+    `🏆 Rang : ${getRank(avgScore, games)}`;
+}
+
+
+
+// ---------------- REFRESH RANK ----------------
+
+async function refreshRank() {
+  if (!uid) return;
+
+  const ref = doc(db, "players", uid);
+  const snap = await getDoc(ref);
+
+  if (!snap.exists()) return;
+
+  const data = snap.data();
+
+  const avg = Number(data.avgScore || 0);
+  const games = Number(data.games || 0);
+
+  updateRankDisplay(avg, games);
+}
+
+// ---------------- VALIDATE ----------------
+
+window.validate = async function(){
+
+  if(locked) return;
+  locked = true;
+
+  const guess = parseFloat(document.getElementById("guess").value);
+  if(isNaN(guess)) return alert("Nombre invalide");
+
+  const err = Math.abs(guess - realTime);
+  const s = score(err);
+
+  const ref = doc(db,"players",uid);
+  const snap = await getDoc(ref);
+  const data = snap.data();
+
+  // 🔥 update games count propre
+  const newGames = (data.games || 0) + 1;
+
+  // 🔥 save game history
+  await setDoc(doc(db,"players",uid,"games",Date.now().toString()),{
+    score: s,
+    createdAt: Date.now()
+  });
+
+  // 🔥 recalcul last 5 scores
+  const gamesRef = collection(db,"players",uid,"games");
+
+  const q = query(
+    gamesRef,
+    orderBy("createdAt","desc"),
+    limit(10)
+  );
+
+  const snapGames = await getDocs(q);
+
+  let scores = [];
+
+  snapGames.forEach(d=>{
+    scores.push(d.data().score);
+  });
+
+  const last5 = scores
+    .filter(v => typeof v === "number")
+    .slice(0, 5);
+
+  let total = 0;
+
+  for(let i = 0; i < last5.length; i++){
+    total += last5[i] * (i + 1);
+  }
+
+  const avgScore =
+    last5.length
+      ? total / ((last5.length * (last5.length + 1)) / 2)
+      : 0;
+
+  // 🔥 IMPORTANT: pseudo NEVER overwritten by email
+  const safePseudo = data.pseudo || user.email.split("@")[0];
+
+  await setDoc(ref,{
+    email: user.email,
+    pseudo: safePseudo,
+    games: newGames,
+    avgScore,
+    bestScore: Math.max(data.bestScore || 0, s),
+    updatedAt: Date.now()
+  },{merge:true});
+
+  updateRankDisplay(avgScore, newGames);
+
+  document.getElementById("guessBox").style.display = "none";
+
+  document.getElementById("status").innerText =
+    `⏱ ${realTime.toFixed(2)}s | 🎯 ${s}/100 | erreur ${err.toFixed(2)}s`;
+};
+
+// ---------------- LEADERBOARD ----------------
+
+function listenLeaderboard(){
+
+  const q = query(
+    collection(db,"players"),
+    orderBy("avgScore","desc"),
+    orderBy("updatedAt","desc"),
+    limit(50)
+  );
+
+  onSnapshot(q,(snap)=>{
+
+    const board = document.getElementById("board");
+    board.innerHTML = "";
+
+    let rankedHTML = "";
+    let unrankedHTML = "";
+
+    let rank = 1;
+
+    snap.forEach(d => {
+
+      const p = d.data();
+
+      const name = p.pseudo || "Joueur";
+      const avg = Number(p.avgScore || 0);
+      const games = Number(p.games || 0);
+
+      const badge = getBadge(avg, games);
+
+      if (games < 5) {
+
+        unrankedHTML += `
+          <div style="opacity:0.6">
+            ❓ ${badge} 👤 ${name}
+            — ⭐ ${avg.toFixed(1)}
+            — 🎮 ${games}
+          </div>
+        `;
+
+      } else {
+
+        rankedHTML += `
+          <div>
+            #${rank++} ${badge} 👤 ${name}
+            — ⭐ ${avg.toFixed(1)}
+            — 🎮 ${games}
+          </div>
+        `;
+      }
+    });
+
+    board.innerHTML = `
+      <h4>🏆 Classement</h4>
+      ${rankedHTML}
+
+      <hr>
+
+      <h4>❓ Non classés (moins de 5 parties)</h4>
+      ${unrankedHTML}
+    `;
+  });
+}
+// ---------------- EVENTS (IMPORTANT) ----------------
+
+document.getElementById("loginBtn").addEventListener("click", login);
+document.getElementById("registerBtn").addEventListener("click", register);
+document.getElementById("logoutBtn").addEventListener("click", logout);
+document.getElementById("startBtn").addEventListener("click", startGame);
+document.getElementById("validateBtn").addEventListener("click", validate);
+
+</script>
+
+</body>
+</html>
